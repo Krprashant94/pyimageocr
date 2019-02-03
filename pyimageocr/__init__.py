@@ -1,6 +1,9 @@
+# Print function may not work if proper GUI is not selected
 import cv2
-import matplotlib.pyplot as plt
 import os
+import numpy as np
+import matplotlib.pyplot as plt
+print("Using OpenCV backend")
 class OCR:
     """
     OCR  class
@@ -12,8 +15,51 @@ class OCR:
     __height, __width, __channels = 0, 0, 0
     rowSegment = []
     colSegment = []
+
     def __init__(self, mode = "en"):
+        self.classes = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
+        self.cache_file = "__pycache__"
+        if not os.path.exists(self.cache_file):
+            os.makedirs(self.cache_file)
         self.__mode = mode
+
+    def train(self, folder, save="train.bin"):
+        sub_folder = os.listdir(folder)
+        training_images = [] 
+        training_label = []
+        i = 0
+
+        knn = cv2.ml.KNearest_create()
+        for class_lable in sub_folder:
+            i += 1
+            cu_folder = folder + os.sep + class_lable
+            imgs = os.listdir(cu_folder)
+            tmp = []
+            print(cu_folder)
+            for img in imgs:
+                char_image = cv2.imread(cu_folder+os.sep+img)
+                char_image = 255 - cv2.cvtColor(char_image, cv2.COLOR_BGR2GRAY)
+                char_image = cv2.resize(char_image, (64, 64)).astype(np.float32)
+                char_image = char_image.flatten()
+                training_images.append(char_image)
+                training_label.append([i])
+
+        training_images = np.array(training_images, dtype=np.float32)
+        training_label = np.array(training_label, dtype=np.float32)
+
+        # print("training_images : ", training_images.shape)
+        # print("training_label", training_label.shape)
+
+        train = knn.train(training_images, cv2.ml.ROW_SAMPLE, training_label)
+        np.savez(save,train=training_images, train_labels=training_label)
+
+
+
+    def pridict(self, filename):
+    	self.getImageFormFile(filename)
+    	self.thresoldImage()
+    	return self.__Segment()
+
     def getImageFormFile(self, filename):
         try:
             img = cv2.imread(filename)
@@ -21,6 +67,7 @@ class OCR:
             self.__height, self.__width, self.__channels = img.shape
         except Exception:
             print("File Read Error... (Line 24)")
+
     def thresoldImage(self):
         try:
             sum = 0
@@ -31,6 +78,7 @@ class OCR:
             self.__image = cv2.threshold(self.__image, thresh, 255, cv2.THRESH_BINARY)[1]
         except Exception:
             print("Unknown Execption at line 34")
+
     def imageShow(self):
         try:
             cv2.namedWindow('image', cv2.WINDOW_NORMAL)
@@ -52,99 +100,87 @@ class OCR:
     def getNoOfFile(self, path):
         path, dirs, files = os.walk(path).__next__()
         return len(files)
-        
+    
     def save(self, image, path):
         num = str(self.getNoOfFile(path)+1)
-        cv2.imwrite("__pycache__/tmp.jpg",image)
-        main = cv2.imread("__pycache__/tmp.jpg")
+        cv2.imwrite(self.cache_file+"/tmp.jpg",image)
+        main = cv2.imread(self.cache_file+"/tmp.jpg")
         main = cv2.resize(main, (64, 64))
         cv2.imwrite(path+"/"+num+".jpg",main)
 
-    def pattern_match(self, image):
-        cv2.imwrite("__pycache__/tmp.jpg",image)
-        main = cv2.imread("__pycache__/tmp.jpg")
+    def pattern_match(self, image=None, file=None):
+        if file:
+            main = cv2.imread(file)
+        else:
+            cv2.imwrite(self.cache_file+"/tmp.jpg",image)
+            main = cv2.imread(self.cache_file+"/tmp.jpg")
         main = cv2.resize(main, (64, 64))
-        cv2.imwrite("__pycache__/tmp.jpg",main)
-        main = cv2.imread("__pycache__/tmp.jpg")
         main = cv2.cvtColor(main, cv2.COLOR_BGR2GRAY)
-        for i in range(ord('A'), ord('Z')):
-            for j in range(1, self.getNoOfFile("img/"+chr(i))+1):
-                if os.path.exists("img/"+chr(i)+"/"+str(j)+".jpg"):
-                    img = cv2.imread("img/"+chr(i)+"/"+str(j)+".jpg")
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    match = main == img
-                    per = sum(sum(match))*100/4096
-                    if per > 60:
-                        return [chr(i), per]
-        return None
+        main = np.array([main.flatten()], np.float32)
 
-    def getRows(self):
-        frequency, space = [], []
-        line = 0
-        segment = []
-        start , end =0,0
-        for i in range(0, self.__height):
-            tmp = []
-            row_freq = 0
-            for j in range(0, self.__width):
-                if(self.__image[i, j] == 0):
-                    row_freq += 1
-            frequency.append(row_freq)
-            space.append(self.__height-i)
-            
-            if line == 0 and row_freq > 5:
-                start = i - 5         #crop with margin ex i-5
-                line = 1
-            elif line == 1 and row_freq < 5:
-                line = 0
-                end=i + 5             #crop with margin ex i+5
-                tmp.append(start)
-                tmp.append(end)
-                segment.append(tmp[:])
-                
-        plt.barh(space, frequency, align='center', alpha=0.5)
-        plt.show()
-        return (segment)
+        #Load the kNN Model
+        with np.load('train.bin.npz') as data:
+            train = data['train']
+            train_labels = data['train_labels']
+
+        knn = cv2.ml.KNearest_create()
+        knn.train(train, cv2.ml.ROW_SAMPLE, train_labels) 
+        ret, result, neighbours, dist = knn.findNearest(main,k=1)
+        return self.classes[int(result)-1]
+
+    def __getRows(self, bit_factor=5):
+        strip = []
+        start = False
+        tmp = 0
+        loop = 0
+        shaped = cv2.resize(self.__image, (bit_factor, self.__height))
+        for i in shaped:
+            loop += 1
+            if sum(i) < bit_factor*255:
+                if not start:
+                    start = True
+                    tmp = loop
+            if sum(i) == bit_factor*255:
+                if start:
+                    start = False
+                    strip.append((tmp,loop))
+        return strip
+
         
-    def getWord(self, image):
-        
+    def __getWord(self, image, bit_factor = 10):
         height, width = image.shape
-        frequency, space = [], []
-        line = 0
-        segment = []
-        start , end =0,0
-        for i in range(0, width):
-            tmp = []
-            row_freq = 0
-            for j in range(0, height):
-                if(image[j, i] == 0):
-                    row_freq += 1
-            frequency.append(row_freq)
-            space.append(i)
-            
-            if line == 0 and row_freq > 3:
-                start = i - 3             #crop with margin ex -3
-                line = 1
-            elif line == 1 and row_freq < 3:
-                line = 0
-                end=i + 3         #crop with margin ex i +3
-                tmp.append(start)
-                tmp.append(end)
-                segment.append(tmp[:])
+        strip = []
+        start = False
+        tmp = 0
+        loop = 0
+
+        shaped = shaped = cv2.resize(image, (self.__width, bit_factor))
+        for i in zip(*shaped):
+            loop += 1
+            if sum(i) < bit_factor*255:
+                if not start:
+                    start = True
+                    tmp = loop
+            if sum(i) == bit_factor*255:
+                if start:
+                    start = False
+                    strip.append((tmp, loop))
+        buff = ""
+        for i, j in strip:
+            buff = buff + self.pattern_match(image=image[0:height, i:j])
         
-        for i in range(len(segment)):
-            charecter = self.pattern_match(image[0:height, segment[i][0]:segment[i][1]])
-            if charecter == None:
-                cv2.namedWindow('What is This Text ?', cv2.WINDOW_NORMAL)
-                cv2.imshow('What is This Text ?', image[0:height, segment[i][0]:segment[i][1]])
-                tmpChar = chr(cv2.waitKey())
-                cv2.destroyAllWindows()
-                if tmpChar != ".":
-                    self.save(image[0:height, segment[i][0]:segment[i][1]], "img/"+tmpChar)
-            else:
-                print(charecter)
-        return
-    def getimageHistogram(self):
-        self.rowSegment = self.getRows()
+        return buff
+    def __Segment(self):
+        line = []
+        self.rowSegment = self.__getRows()
         for i in range(len(self.rowSegment)):
-            self.getWord(self.__image[self.rowSegment[i][0]:self.rowSegment[i][1], 0:self.__width]);
+            line.append(self.__getWord(self.__image[self.rowSegment[i][0]:self.rowSegment[i][1], 0:self.__width]))
+        return line
+
+def main():
+    ocr = OCR(mode='en')
+    ocr.train("../Training")
+
+
+if __name__ == '__main__':
+    main()
